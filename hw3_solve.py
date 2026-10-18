@@ -6,7 +6,7 @@ import numpy as np
 df = pd.read_csv("/Users/fahmimshahriar/Documents/Project/ML_Zoomcamp/car_fuel_efficiency_2026.csv")
 
 print("=" * 60)
-print("ML ZOOMCAMP 2026 - HOMEWORK 2 (Regression)")
+print("ML ZOOMCAMP 2026 - HOMEWORK 3 (Classification)")
 print("=" * 60)
 
 # Features used in the homework (the 4 candidates listed in Q1)
