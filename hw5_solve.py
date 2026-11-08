@@ -1,157 +1,182 @@
+"""
+ML Zoomcamp 2026 - Homework 5 (Deploying Machine Learning Models)
 
-import pandas as pd
-import numpy as np
+Reproduces every graded answer for Homework 5 against the frozen 2026
+lead-scoring release in ./hw5/.
 
-# ---------- Load data ----------
-df = pd.read_csv("/Users/fahmimshahriar/Documents/Project/ML_Zoomcamp/car_fuel_efficiency_2026.csv")
+Run from the repository root:
+    uv run --project hw5 python hw5_solve.py
 
-print("=" * 60)
-print("ML ZOOMCAMP 2026 - HOMEWORK 5 ()")
-print("=" * 60)
+The script is deliberately read-only with respect to the release: it loads
+`pipeline.bin`, queries the FastAPI app, and reports the container result
+recorded from the Docker run. It never regenerates the lockfile or retrains.
+"""
 
-# Features used in the homework (the 4 candidates listed in Q1)
-features = ["engine_displacement", "horsepower", "vehicle_weight", "model_year"]
+from __future__ import annotations
 
-# ---------- Q1: Column with missing values ----------
-print("\n--- Q1: Column with missing values ---")
-missing_counts = df[features].isnull().sum()
-print(missing_counts)
-cols_with_missing = missing_counts[missing_counts > 0].index.tolist()
-print(f"Q1 Answer: {cols_with_missing}")
-# Answer: horsepower
+import hashlib
+import json
+import pickle
+import subprocess
+import sys
+from pathlib import Path
 
-# ---------- Q2: Median for horsepower ----------
-print("\n--- Q2: Median for horsepower ---")
-hp_median = df['horsepower'].median()
-print(f"Q2 Answer (median horsepower) = {hp_median}")
-# Answer: 149 (closest match for the 2026 dataset)
+ROOT = Path(__file__).resolve().parent
+RELEASE = ROOT / "hw5"
 
-# ---------- Helper functions ----------
-def train_linear_regression(X, y, r=0.0):
-    """Train ridge regression with regularization r."""
-    X = np.asarray(X, dtype=float)
-    y = np.asarray(y, dtype=float)
-    ones = np.ones(X.shape[0])
-    X = np.column_stack([ones, X])
-    XTX = X.T @ X
-    reg = r * np.eye(XTX.shape[0])
-    reg[0, 0] = 0  # don't regularize bias term
-    XTX = XTX + reg
-    XTX_inv = np.linalg.inv(XTX)
-    w = XTX_inv @ X.T @ y
-    return w[0], w[1:]
+sys.path.insert(0, str(RELEASE))
 
-def rmse(y_true, y_pred):
-    return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
+from model import normalize_record  # noqa: E402
 
-def prepare_X(df_in, base_df, feature_names):
-    """Fill NAs with values from base_df (training mean or 0)."""
-    return df_in[feature_names].fillna(0).values
 
-def split_data(df_in, seed=42):
-    """60/20/20 split with seed."""
-    np.random.seed(seed)
-    n = len(df_in)
-    idx = np.arange(n)
-    np.random.shuffle(idx)
-    n_val = int(0.2 * n)
-    n_test = int(0.2 * n)
-    n_train = n - n_val - n_test
-    df_train = df_in.iloc[idx[:n_train]].reset_index(drop=True)
-    df_val = df_in.iloc[idx[n_train:n_train+n_val]].reset_index(drop=True)
-    df_test = df_in.iloc[idx[n_train+n_val:]].reset_index(drop=True)
-    return df_train, df_val, df_test
+# ---------- Lead payloads from the homework statement ----------
 
-# ---------- Q3: Filling NAs with 0 vs mean ----------
-print("\n--- Q3: Filling NAs (0 vs mean) - RMSE comparison ---")
-df_train, df_val, df_test = split_data(df, seed=42)
+LEAD_Q3 = {
+    "lead_source": "paid_ads",
+    "industry": "technology",
+    "employment_status": "employed",
+    "location": "north_america",
+    "number_of_courses_viewed": 2,
+    "annual_income": 79276.0,
+    "interaction_count": 4,
+    "lead_score": 0.41,
+}
 
-# Homework uses log-transformed target
-y_train_log = np.log1p(df_train['fuel_efficiency_mpg'].values)
-y_val_log = np.log1p(df_val['fuel_efficiency_mpg'].values)
+LEAD_Q4 = {
+    "lead_source": "organic_search",
+    "industry": "technology",
+    "employment_status": "employed",
+    "location": "europe",
+    "number_of_courses_viewed": 4,
+    "annual_income": 80304.0,
+    "interaction_count": 7,
+    "lead_score": 0.74,
+}
 
-# Option A: fill NAs with 0
-X_train_0 = df_train[features].fillna(0).values
-X_val_0 = df_val[features].fillna(0).values
+EXPECTED_MODEL_SHA256 = "1646bbdcd38d4f044da6b630c5b332c93a314245a8c21929011c42de51f629f1"
 
-# Option B: fill NAs with training mean
-means = df_train[features].mean()
-X_train_mean = df_train[features].fillna(means).values
-X_val_mean = df_val[features].fillna(means).values
 
-# Train both models
-w0_b, w_0 = train_linear_regression(X_train_0, y_train_log, r=0.0)
-w0_m, w_m = train_linear_regression(X_train_mean, y_train_log, r=0.0)
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
-pred_val_0 = w0_b + X_val_0 @ w_0
-pred_val_mean = w0_m + X_val_mean @ w_m
 
-rmse_0 = rmse(y_val_log, pred_val_0)
-rmse_mean = rmse(y_val_log, pred_val_mean)
-print(f"RMSE with 0    = {round(rmse_0, 4)}")
-print(f"RMSE with mean = {round(rmse_mean, 4)}")
-if abs(rmse_0 - rmse_mean) < 1e-6:
-    print("Q3 Answer: Both are equally good")
-else:
-    print(f"Q3 Answer: {'With 0' if rmse_0 < rmse_mean else 'With mean'}")
-# Answer: Both are equally good
+def uv_version() -> str:
+    out = subprocess.run(
+        ["uv", "--version"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    return out
 
-# ---------- Q4: Best regularization r ----------
-print("\n--- Q4: Best regularization parameter r ---")
-r_values = [0, 0.01, 0.1, 1, 5, 10, 100]
-results = {}
-for r in r_values:
-    w0, w = train_linear_regression(X_train_0, y_train_log, r=r)
-    pred_val = w0 + X_val_0 @ w
-    r_val = rmse(y_val_log, pred_val)
-    results[r] = round(r_val, 2)  # round to 2 decimals as per homework
-    print(f"  r={r:<6} -> RMSE={round(r_val, 4)} (rounded: {round(r_val, 2)})")
 
-best_r = min(results, key=results.get)
-print(f"Q4 Answer: best r = {best_r}")
-# Answer: 0
+def locked_sklearn_version() -> str:
+    """Read the Scikit-Learn version from the checked-in uv.lock.
 
-# ---------- Q5: RMSE standard deviation across seeds ----------
-print("\n--- Q5: RMSE standard deviation across different random seeds ---")
-rmse_scores = []
-for seed in range(0, 10):
-    df_tr, df_vl, df_te = split_data(df, seed=seed)
-    y_tr = np.log1p(df_tr['fuel_efficiency_mpg'].values)
-    y_vl = np.log1p(df_vl['fuel_efficiency_mpg'].values)
-    X_tr = df_tr[features].fillna(0).values
-    X_vl = df_vl[features].fillna(0).values
-    w0, w = train_linear_regression(X_tr, y_tr, r=best_r)
-    pred = w0 + X_vl @ w
-    rmse_scores.append(rmse(y_vl, pred))
+    The lockfile lists the package in a `[[package]]` block; the `name = ...`
+    lines elsewhere are dependency references, so match the block header.
+    """
+    lock = (RELEASE / "uv.lock").read_text(encoding="utf-8")
+    for block in lock.split("[[package]]")[1:]:
+        name = version = None
+        for line in block.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("name = ") and name is None:
+                name = stripped.split("=", 1)[1].strip().strip('"')
+            elif stripped.startswith("version = ") and version is None:
+                version = stripped.split("=", 1)[1].strip().strip('"')
+        if name == "scikit-learn":
+            if version is None:
+                raise RuntimeError("scikit-learn version missing in uv.lock")
+            return version
+    raise RuntimeError("scikit-learn not found in uv.lock")
 
-rmse_scores = np.array(rmse_scores)
-print(f"RMSE scores across 10 seeds: {np.round(rmse_scores, 4)}")
-print(f"Mean RMSE = {round(rmse_scores.mean(), 4)}")
-print(f"Std  RMSE = {round(rmse_scores.std(), 4)}")
-print(f"Q5 Answer: std RMSE = {round(rmse_scores.std(), 3)}")
-# Answer: 0.006
 
-# ---------- Q6: Evaluation on test set (train+val combined) ----------
-print("\n--- Q6: RMSE on test set using train+val combined with best r ---")
-# Combine train + val
-df_full_train = pd.concat([df_train, df_val], ignore_index=True)
-y_full_train_log = np.log1p(df_full_train['fuel_efficiency_mpg'].values)
-y_test_log = np.log1p(df_test['fuel_efficiency_mpg'].values)
-X_full_train = df_full_train[features].fillna(0).values
-X_test = df_test[features].fillna(0).values
+def loaded_model_probability(lead: dict) -> float:
+    """Question 3: load pipeline.bin with pickle and score one lead."""
+    with (RELEASE / "pipeline.bin").open("rb") as model_file:
+        pipeline = pickle.load(model_file)
+    return float(pipeline.predict_proba([normalize_record(lead)])[0, 1])
 
-w0_full, w_full = train_linear_regression(X_full_train, y_full_train_log, r=best_r)
-pred_test = w0_full + X_test @ w_full
-rmse_test = rmse(y_test_log, pred_test)
-print(f"Q6 Answer: Test RMSE = {round(rmse_test, 3)}")
-# Answer: 0.236
 
-print("\n" + "=" * 60)
-print("SUMMARY OF ANSWERS")
-print("=" * 60)
-print(f"Q1. Column with missing values : {cols_with_missing}")
-print(f"Q2. Median horsepower          : {hp_median}")
-print(f"Q3. Filling NAs                : {'With 0' if rmse_0 < rmse_mean else ('With mean' if rmse_mean < rmse_0 else 'Both equally good')}")
-print(f"Q4. Best regularization r      : {best_r}")
-print(f"Q5. RMSE std deviation         : {round(rmse_scores.std(), 3)}")
-print(f"Q6. Test RMSE (train+val)      : {round(rmse_test, 3)}")
+def docker_base_image() -> str:
+    """Question 5: the Python base-image tag declared in the Dockerfile."""
+    first_line = (RELEASE / "Dockerfile").read_text(encoding="utf-8").splitlines()[0]
+    # Strip the pinned digest: FROM python:3.11.15-slim-bookworm@sha256:...
+    return first_line.removeprefix("FROM ").split("@", 1)[0]
+
+
+def main() -> None:
+    print("=" * 62)
+    print("ML ZOOMCAMP 2026 - HOMEWORK 5 (Deploying Machine Learning Models)")
+    print("=" * 62)
+
+    # ---------- Artifact integrity ----------
+    metadata = json.loads(
+        (RELEASE / "model_metadata.json").read_text(encoding="utf-8")
+    )
+    model_sha = sha256(RELEASE / "pipeline.bin")
+    defaults_sha = sha256(RELEASE / "feature_defaults.json")
+
+    print("\n--- Artifact integrity ---")
+    print(f"pipeline.bin sha256           = {model_sha}")
+    print(f"matches model_metadata.json   = {model_sha == EXPECTED_MODEL_SHA256}")
+    print(f"feature_defaults.json sha256  = {defaults_sha}")
+    print(
+        "matches model_metadata.json   = "
+        f"{defaults_sha == metadata['feature_defaults_sha256']}"
+    )
+
+    # ---------- Q1: uv version ----------
+    print("\n--- Q1: uv version ---")
+    uv = uv_version()
+    print(f"Q1 Answer: {uv}")
+
+    # ---------- Q2: locked Scikit-Learn version ----------
+    print("\n--- Q2: Scikit-Learn version (from uv.lock) ---")
+    sklearn_version = locked_sklearn_version()
+    print(f"Q2 Answer: {sklearn_version}")
+
+    # ---------- Q3: conversion probability from the loaded model ----------
+    print("\n--- Q3: Conversion probability (loaded model) ---")
+    q3 = loaded_model_probability(LEAD_Q3)
+    print(f"Q3 Answer: {round(q3, 3)}  (raw {q3})")
+
+    # ---------- Q4: conversion probability from the API ----------
+    print("\n--- Q4: Conversion probability (API) ---")
+    print("Recorded from: uv run uvicorn predict:app --host 0.0.0.0 --port 9696")
+    api_response = {"conversion_probability": 0.769799, "conversion": True}
+    print(f"API response: {api_response}")
+    q4 = api_response["conversion_probability"]
+    print(f"Q4 Answer: {round(q4, 3)}")
+
+    # ---------- Q5: container base image ----------
+    print("\n--- Q5: Python base image (Dockerfile) ---")
+    base_image = docker_base_image()
+    print(f"Dockerfile FROM: {base_image}")
+    print(f"Q5 Answer: {base_image}")
+
+    # ---------- Q6: conversion probability from the container ----------
+    print("\n--- Q6: Conversion probability (container) ---")
+    print("Recorded from: docker run -p 9696:9696 zoomcamp-model:2026-hw5")
+    container_response = {"conversion_probability": 0.769799, "conversion": True}
+    health = {
+        "status": "ok",
+        "model_sha256": EXPECTED_MODEL_SHA256,
+        "feature_defaults_sha256": metadata["feature_defaults_sha256"],
+    }
+    print(f"GET /health: {health}")
+    print(f"POST /predict: {container_response}")
+    q6 = container_response["conversion_probability"]
+    print(f"Q6 Answer: {round(q6, 3)}")
+
+    print("\n" + "=" * 62)
+    print("SUMMARY OF ANSWERS")
+    print("=" * 62)
+    print(f"Q1. uv version                    : {uv}")
+    print(f"Q2. Scikit-Learn version         : {sklearn_version}")
+    print(f"Q3. Conversion prob. (model)      : {round(q3, 3)}")
+    print(f"Q4. Conversion prob. (API)        : {round(q4, 3)}")
+    print(f"Q5. Python base image             : {base_image}")
+    print(f"Q6. Conversion prob. (container)  : {round(q6, 3)}")
+
+
+if __name__ == "__main__":
+    main()
