@@ -1,0 +1,4 @@
+# Keep the frozen release byte-identical to the course artifact.
+# The sha256 checksums in model_metadata.json are computed over LF line endings.
+* text=auto eol=lf
+*.bin binary
