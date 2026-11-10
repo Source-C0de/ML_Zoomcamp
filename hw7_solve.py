@@ -1,159 +1,191 @@
+"""
+ML Zoomcamp 2026 - Homework 6 (Decision Trees and Ensemble Learning)
 
+Reproduces every graded answer for Homework 6 against the pinned 2026
+car fuel-efficiency release.
 
+Run from the repository root:
+    uv run --project hw6 python hw6_solve.py
 
-import pandas as pd
+Dataset preparation follows the homework statement exactly:
+  * fill missing values with zeros
+  * train_test_split(df, test_size=0.2, random_state=1) then
+    train_test_split(df_full_train, test_size=0.25, random_state=1)
+  * DictVectorizer(sparse=True)
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
 import numpy as np
+import pandas as pd
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.feature_extraction import DictVectorizer
+from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import train_test_split
+from sklearn.tree import DecisionTreeRegressor
 
-# ---------- Load data ----------
-df = pd.read_csv("/Users/fahmimshahriar/Documents/Project/ML_Zoomcamp/car_fuel_efficiency_2026.csv")
 
-print("=" * 60)
-print("ML ZOOMCAMP 2026 - HOMEWORK 5 ()")
-print("=" * 60)
+ROOT = Path(__file__).resolve().parent
+DATA = ROOT / "hw6" / "car_fuel_efficiency_2026.csv"
 
-# Features used in the homework (the 4 candidates listed in Q1)
-features = ["engine_displacement", "horsepower", "vehicle_weight", "model_year"]
+TARGET = "fuel_efficiency_mpg"
+SEED = 1
 
-# ---------- Q1: Column with missing values ----------
-print("\n--- Q1: Column with missing values ---")
-missing_counts = df[features].isnull().sum()
-print(missing_counts)
-cols_with_missing = missing_counts[missing_counts > 0].index.tolist()
-print(f"Q1 Answer: {cols_with_missing}")
-# Answer: horsepower
 
-# ---------- Q2: Median for horsepower ----------
-print("\n--- Q2: Median for horsepower ---")
-hp_median = df['horsepower'].median()
-print(f"Q2 Answer (median horsepower) = {hp_median}")
-# Answer: 149 (closest match for the 2026 dataset)
+def rmse(y_true, y_pred) -> float:
+    return float(mean_squared_error(y_true, y_pred) ** 0.5)
 
-# ---------- Helper functions ----------
-def train_linear_regression(X, y, r=0.0):
-    """Train ridge regression with regularization r."""
-    X = np.asarray(X, dtype=float)
-    y = np.asarray(y, dtype=float)
-    ones = np.ones(X.shape[0])
-    X = np.column_stack([ones, X])
-    XTX = X.T @ X
-    reg = r * np.eye(XTX.shape[0])
-    reg[0, 0] = 0  # don't regularize bias term
-    XTX = XTX + reg
-    XTX_inv = np.linalg.inv(XTX)
-    w = XTX_inv @ X.T @ y
-    return w[0], w[1:]
 
-def rmse(y_true, y_pred):
-    return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
+def load_data():
+    df = pd.read_csv(DATA)
 
-def prepare_X(df_in, base_df, feature_names):
-    """Fill NAs with values from base_df (training mean or 0)."""
-    return df_in[feature_names].fillna(0).values
+    # Fill missing values with zeros, then split with the exact calls from
+    # the homework statement.
+    df = df.fillna(0)
 
-def split_data(df_in, seed=42):
-    """60/20/20 split with seed."""
-    np.random.seed(seed)
-    n = len(df_in)
-    idx = np.arange(n)
-    np.random.shuffle(idx)
-    n_val = int(0.2 * n)
-    n_test = int(0.2 * n)
-    n_train = n - n_val - n_test
-    df_train = df_in.iloc[idx[:n_train]].reset_index(drop=True)
-    df_val = df_in.iloc[idx[n_train:n_train+n_val]].reset_index(drop=True)
-    df_test = df_in.iloc[idx[n_train+n_val:]].reset_index(drop=True)
-    return df_train, df_val, df_test
+    df_full_train, df_test = train_test_split(
+        df, test_size=0.2, random_state=SEED
+    )
+    df_train, df_val = train_test_split(
+        df_full_train, test_size=0.25, random_state=SEED
+    )
 
-# ---------- Q3: Filling NAs with 0 vs mean ----------
-print("\n--- Q3: Filling NAs (0 vs mean) - RMSE comparison ---")
-df_train, df_val, df_test = split_data(df, seed=42)
+    y_train = df_train.pop(TARGET)
+    y_val = df_val.pop(TARGET)
 
-# Homework uses log-transformed target
-y_train_log = np.log1p(df_train['fuel_efficiency_mpg'].values)
-y_val_log = np.log1p(df_val['fuel_efficiency_mpg'].values)
+    dv = DictVectorizer(sparse=True)
+    train_matrix = dv.fit_transform(df_train.to_dict(orient="records"))
+    val_matrix = dv.transform(df_val.to_dict(orient="records"))
+    features = df_train.columns
+    return dv, train_matrix, val_matrix, y_train, y_val, features, df
 
-# Option A: fill NAs with 0
-X_train_0 = df_train[features].fillna(0).values
-X_val_0 = df_val[features].fillna(0).values
 
-# Option B: fill NAs with training mean
-means = df_train[features].mean()
-X_train_mean = df_train[features].fillna(means).values
-X_val_mean = df_val[features].fillna(means).values
+def main() -> None:
+    print("=" * 62)
+    print("ML ZOOMCAMP 2026 - HOMEWORK 6 (Decision Trees and Ensembles)")
+    print("=" * 62)
 
-# Train both models
-w0_b, w_0 = train_linear_regression(X_train_0, y_train_log, r=0.0)
-w0_m, w_m = train_linear_regression(X_train_mean, y_train_log, r=0.0)
+    dv, X_train, X_val, y_train, y_val, features, target = load_data()
+    print(f"\ntrain rows: {len(y_train)}  val rows: {len(y_val)}")
+    print(f"features ({len(features)}): {list(features)}")
 
-pred_val_0 = w0_b + X_val_0 @ w_0
-pred_val_mean = w0_m + X_val_mean @ w_m
+    # ---------- Q1: decision tree max_depth=1 splitting feature ----------
+    print("\n--- Q1: Original splitting feature (DecisionTree max_depth=1) ---")
+    tree = DecisionTreeRegressor(max_depth=1, random_state=SEED)
+    tree.fit(X_train, y_train)
+    split_feature = dv.feature_names_[tree.tree_.feature[0]]
+    original_feature = split_feature.split("=", 1)[0]
+    print(f"vectorized split feature: {split_feature}")
+    print(f"Q1 Answer: {original_feature}")
 
-rmse_0 = rmse(y_val_log, pred_val_0)
-rmse_mean = rmse(y_val_log, pred_val_mean)
-print(f"RMSE with 0    = {round(rmse_0, 4)}")
-print(f"RMSE with mean = {round(rmse_mean, 4)}")
-if abs(rmse_0 - rmse_mean) < 1e-6:
-    print("Q3 Answer: Both are equally good")
-else:
-    print(f"Q3 Answer: {'With 0' if rmse_0 < rmse_mean else 'With mean'}")
-# Answer: Both are equally good
+    # ---------- Q2 & Q3: n_estimators sweep ----------
+    print("\n--- Q2 / Q3: n_estimators sweep (random_state=1) ---")
+    forest_scores: dict[int, float] = {}
+    for n_estimators in [10, 50, 100, 150]:
+        forest = RandomForestRegressor(
+            n_estimators=n_estimators, random_state=SEED, n_jobs=-1
+        )
+        forest.fit(X_train, y_train)
+        score = rmse(y_val, forest.predict(X_val))
+        forest_scores[n_estimators] = score
+        print(f"  n_estimators={n_estimators:<4} -> val RMSE = {score:.6f}")
 
-# ---------- Q4: Best regularization r ----------
-print("\n--- Q4: Best regularization parameter r ---")
-r_values = [0, 0.01, 0.1, 1, 5, 10, 100]
-results = {}
-for r in r_values:
-    w0, w = train_linear_regression(X_train_0, y_train_log, r=r)
-    pred_val = w0 + X_val_0 @ w
-    r_val = rmse(y_val_log, pred_val)
-    results[r] = round(r_val, 2)  # round to 2 decimals as per homework
-    print(f"  r={r:<6} -> RMSE={round(r_val, 4)} (rounded: {round(r_val, 2)})")
+    q2 = forest_scores[10]
+    best_n_estimators = min(forest_scores, key=forest_scores.get)
+    # The graded options are decade-scaled; pick the closest one.
+    q2_options = [0.1837, 1.837, 18.37, 183.7]
+    q2_option = min(q2_options, key=lambda opt: abs(opt - q2))
+    print(f"Q2 Answer (n_estimators=10): {q2:.4f} -> closest option: {q2_option}")
+    print(f"Q3 Answer (best n_estimators): {best_n_estimators}")
 
-best_r = min(results, key=results.get)
-print(f"Q4 Answer: best r = {best_r}")
-# Answer: 0
+    # ---------- Q4: best max_depth (mean RMSE over n_estimators) ----------
+    print("\n--- Q4: max_depth sweep (mean RMSE over n_estimators) ---")
+    depth_scores: dict[int, float] = {}
+    for depth in [10, 15, 20, 25]:
+        scores = []
+        for n_estimators in [10, 50, 100, 150]:
+            forest = RandomForestRegressor(
+                n_estimators=n_estimators,
+                max_depth=depth,
+                random_state=SEED,
+                n_jobs=-1,
+            )
+            forest.fit(X_train, y_train)
+            scores.append(rmse(y_val, forest.predict(X_val)))
+        depth_scores[depth] = float(np.mean(scores))
+        print(f"  max_depth={depth:<3} -> mean RMSE = {depth_scores[depth]:.6f}")
 
-# ---------- Q5: RMSE standard deviation across seeds ----------
-print("\n--- Q5: RMSE standard deviation across different random seeds ---")
-rmse_scores = []
-for seed in range(0, 10):
-    df_tr, df_vl, df_te = split_data(df, seed=seed)
-    y_tr = np.log1p(df_tr['fuel_efficiency_mpg'].values)
-    y_vl = np.log1p(df_vl['fuel_efficiency_mpg'].values)
-    X_tr = df_tr[features].fillna(0).values
-    X_vl = df_vl[features].fillna(0).values
-    w0, w = train_linear_regression(X_tr, y_tr, r=best_r)
-    pred = w0 + X_vl @ w
-    rmse_scores.append(rmse(y_vl, pred))
+    best_max_depth = min(depth_scores, key=depth_scores.get)
+    print(f"Q4 Answer (best max_depth): {best_max_depth}")
 
-rmse_scores = np.array(rmse_scores)
-print(f"RMSE scores across 10 seeds: {np.round(rmse_scores, 4)}")
-print(f"Mean RMSE = {round(rmse_scores.mean(), 4)}")
-print(f"Std  RMSE = {round(rmse_scores.std(), 4)}")
-print(f"Q5 Answer: std RMSE = {round(rmse_scores.std(), 3)}")
-# Answer: 0.006
+    # ---------- Q5: most important feature ----------
+    print("\n--- Q5: Most important feature (n_estimators=10, max_depth=20) ---")
+    importance_forest = RandomForestRegressor(
+        n_estimators=10, max_depth=20, random_state=SEED, n_jobs=-1
+    )
+    importance_forest.fit(X_train, y_train)
+    importances = dict(zip(dv.feature_names_, importance_forest.feature_importances_))
 
-# ---------- Q6: Evaluation on test set (train+val combined) ----------
-print("\n--- Q6: RMSE on test set using train+val combined with best r ---")
-# Combine train + val
-df_full_train = pd.concat([df_train, df_val], ignore_index=True)
-y_full_train_log = np.log1p(df_full_train['fuel_efficiency_mpg'].values)
-y_test_log = np.log1p(df_test['fuel_efficiency_mpg'].values)
-X_full_train = df_full_train[features].fillna(0).values
-X_test = df_test[features].fillna(0).values
+    candidates = [
+        "vehicle_weight",
+        "horsepower",
+        "acceleration",
+        "engine_displacement",
+    ]
+    for name in candidates:
+        print(f"  {name:<22} = {importances.get(name, 0.0):.6f}")
 
-w0_full, w_full = train_linear_regression(X_full_train, y_full_train_log, r=best_r)
-pred_test = w0_full + X_test @ w_full
-rmse_test = rmse(y_test_log, pred_test)
-print(f"Q6 Answer: Test RMSE = {round(rmse_test, 3)}")
-# Answer: 0.236
+    best_feature = max(candidates, key=lambda name: importances.get(name, 0.0))
+    print(f"Q5 Answer: {best_feature}")
 
-print("\n" + "=" * 60)
-print("SUMMARY OF ANSWERS")
-print("=" * 60)
-print(f"Q1. Column with missing values : {cols_with_missing}")
-print(f"Q2. Median horsepower          : {hp_median}")
-print(f"Q3. Filling NAs                : {'With 0' if rmse_0 < rmse_mean else ('With mean' if rmse_mean < rmse_0 else 'Both equally good')}")
-print(f"Q4. Best regularization r      : {best_r}")
-print(f"Q5. RMSE std deviation         : {round(rmse_scores.std(), 3)}")
-print(f"Q6. Test RMSE (train+val)      : {round(rmse_test, 3)}")
+    # ---------- Q6: XGBoost eta comparison ----------
+    print("\n--- Q6: XGBoost eta (0.3 vs 0.1) ---")
+    import xgboost as xgb
+
+    dtrain = xgb.DMatrix(X_train, label=y_train)
+    dval = xgb.DMatrix(X_val, label=y_val)
+    watchlist = [(dtrain, "train"), (dval, "val")]
+
+    eta_scores: dict[float, float] = {}
+    for eta in [0.3, 0.1]:
+        params = {
+            "eta": eta,
+            "max_depth": 6,
+            "min_child_weight": 1,
+            "objective": "reg:squarederror",
+            "nthread": 8,
+            "seed": SEED,
+            "verbosity": 1,
+        }
+        bst = xgb.train(params, dtrain, num_boost_round=100, evals=watchlist)
+        # XGBoost 3.x returns a plain string like "[0]  val-rmse:1.234567"
+        raw = bst.eval(dval)
+        if isinstance(raw, dict):
+            score = float(raw["rmse"])
+        else:
+            score = float(str(raw).rsplit(":", 1)[-1].strip(" ]"))
+        eta_scores[eta] = score
+        print(f"  eta={eta} -> val RMSE = {score:.6f}")
+
+    best_eta = min(eta_scores, key=eta_scores.get)
+    if eta_scores[0.3] == eta_scores[0.1]:
+        q6_answer = "Both give equal value"
+    else:
+        q6_answer = f"{best_eta}"
+    print(f"Q6 Answer: {q6_answer}")
+
+    print("\n" + "=" * 62)
+    print("SUMMARY OF ANSWERS")
+    print("=" * 62)
+    print(f"Q1. Splitting feature        : {original_feature}")
+    print(f"Q2. RF val RMSE (n=10)       : {q2_option}  (computed {q2:.4f})")
+    print(f"Q3. Best n_estimators        : {best_n_estimators}")
+    print(f"Q4. Best max_depth           : {best_max_depth}")
+    print(f"Q5. Most important feature   : {best_feature}")
+    print(f"Q6. Best XGBoost eta         : {q6_answer}")
+
+
+if __name__ == "__main__":
+    main()
